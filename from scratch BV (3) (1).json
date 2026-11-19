@@ -1,0 +1,1225 @@
+{
+  "name": "from scratch BV",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "5eca6cd8-06b4-49b8-8fa9-978b3efc6a35",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "53c00cda-9c8d-4299-a55a-c1635f3b90df",
+      "name": "Candidate Application Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        288
+      ],
+      "webhookId": "bv-intake",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "Zi5lHpeKK4WItIhl",
+          "name": "Header Auth account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "7902fd15-7e52-4191-9759-0992a036caed",
+              "name": "application_notes",
+              "value": "={{ $json.body.application_notes }}",
+              "type": "string"
+            },
+            {
+              "id": "b5373a81-5f47-40c3-ae42-31516a53fab6",
+              "name": "candidate_name",
+              "value": "={{ $json.body.candidate_name }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "cb00d1df-8f81-4f6e-a43a-e8fd63195ff1",
+      "name": "Normalize Application Fields",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        224,
+        288
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=$('Normalize Application Fields').item.json.candidate_name / .application_notes{{ $('Normalize Application Fields').item.json.candidate_name }}\n{{ $('Normalize Application Fields').item.json.application_notes }}",
+        "options": {
+          "systemMessage": "=You are the intake classification agent for Berger & Voss Talent Group, a recruitment agency with offices in Munich and Cluj-Napoca.\n\nRead one candidate application and produce a structured classification.\n\nOutput strictly as JSON:\n{\n  \"classification\": \"advance\" | \"request_info\" | \"decline\",\n  \"confidence\": <number between 0 and 1>\n}\n\nReturn only the JSON object. No markdown fences, no commentary.\n\nif the input raises a topic outside its defined scope. It should classify the application normally but flag the out-of-scope content as a note for a human reviewer, rather than generating any advice.",
+          "maxIterations": 3
+        }
+      },
+      "id": "889e7113-7ffc-477a-8748-f740a8893786",
+      "name": "Intake Classification Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2,
+      "position": [
+        800,
+        32
+      ],
+      "notes": "No guardrails, no tool tiering, no Max Iterations cap yet — this is the pre-Sprint-1 baseline. Sublesson 2.1 adds all of that on top of this file."
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { status: 'processed', classification: $json.classification, confidence: $json.confidence } }}",
+        "options": {}
+      },
+      "id": "4c1337db-9540-44ac-90f1-ec59391d0a6b",
+      "name": "Output (drafted next-step message)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        3008,
+        16
+      ]
+    },
+    {
+      "parameters": {
+        "model": "google/gemini-2.5-flash",
+        "options": {
+          "temperature": 0.2
+        }
+      },
+      "id": "a8211761-f7fb-4649-a20c-29f36d21a72e",
+      "name": "OpenRouter Chat Model (Guardrails input)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [
+        528,
+        528
+      ],
+      "credentials": {
+        "openRouterApi": {
+          "id": "Z8ozOpzlq3cSCMiB",
+          "name": "OpenRouter account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": "google/gemini-2.5-flash",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [
+        880,
+        272
+      ],
+      "id": "fcef57e4-b41d-4660-a0d2-f53d358a132e",
+      "name": "OpenRouter Chat Model (Agent)",
+      "credentials": {
+        "openRouterApi": {
+          "id": "Z8ozOpzlq3cSCMiB",
+          "name": "OpenRouter account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// The Agent node's native output field ($json.output) is a STRING —\n// possibly with the JSON classification wrapped inside it, sometimes\n// with stray whitespace or markdown fences even when the prompt asks\n// for neither. This node parses it into flat, usable fields so every\n// downstream node (Output Guardrails, the final Output node) can\n// reference $json.classification / $json.confidence / $json.reasoning\n// directly instead of guessing at a raw string's shape.\n\nconst raw = $input.first().json.output;\n\nlet parsed;\ntry {\n  // Strip markdown code fences if the model added them despite instructions\n  const cleaned = String(raw).trim().replace(/^```json\\s*/i, '').replace(/```$/, '').trim();\n  parsed = JSON.parse(cleaned);\n} catch (err) {\n  // If parsing fails, surface it as a structural problem rather than\n  // silently passing blank fields forward.\n  parsed = {\n    classification: '',\n    confidence: null,\n    reasoning: '',\n    parse_error: true,\n    raw_output: raw\n  };\n}\n\nreturn [{\n  json: {\n    ...$input.first().json,\n    classification: parsed.classification,\n    confidence: parsed.confidence,\n    reasoning: parsed.reasoning || '',\n    parse_error: parsed.parse_error || false,\n    raw_output: parsed.raw_output\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1152,
+        144
+      ],
+      "id": "49f17a00-dd2a-4a62-bfa5-3fc1bc194e10",
+      "name": "Parse Agent Output"
+    },
+    {
+      "parameters": {
+        "text": "=Classification decision for a Berger & Voss recruitment application: {{ $json.classification }} (confidence {{ $json.confidence }})",
+        "guardrails": {
+          "topicalAlignment": {
+            "value": {
+              "threshold": 0.7,
+              "prompt": "You are a content analysis system that determines if text stays on topic.\n\nBUSINESS SCOPE:\"This agent classifies recruitment applications by role fit, urgency, and missing information, and drafts next-step messages. It does not provide visa or immigration guidance, salary negotiation advice, or legal advice. Any content matching those topics should be flagged as out of scope.\"\n\n\nDetermine if the text stays within the defined business scope. Flag any content\nthat strays from the allowed topics."
+            }
+          }
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.guardrails",
+      "typeVersion": 2,
+      "position": [
+        1600,
+        -112
+      ],
+      "id": "1c9df79a-9e89-44ea-b389-af0e72cc8b0c",
+      "name": "Output Guardrails"
+    },
+    {
+      "parameters": {
+        "model": "google/gemini-2.5-flash",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [
+        1680,
+        128
+      ],
+      "id": "e9f82254-bad0-4943-a83f-96bb2f4bb080",
+      "name": "OpenRouter Chat Model (Guardrails output)",
+      "credentials": {
+        "openRouterApi": {
+          "id": "Z8ozOpzlq3cSCMiB",
+          "name": "OpenRouter account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Output Guardrails replaces the item with { guardrailsInput, checks } on\n// its Pass branch and does not forward the classification/confidence\n// fields. This node recovers them from guardrailsInput (which n8n's\n// Guardrails node does preserve) so the final response has real data.\n\nconst input = $input.first().json.guardrailsInput;\n\n// guardrailsInput is the exact string we sent in: \n// \"Classification decision for a Berger & Voss recruitment application: X (confidence Y)\"\nconst match = String(input).match(/application:\\s*(\\w+)\\s*\\(confidence\\s*([\\d.]+)\\)/);\n\nreturn [{\n  json: {\n    classification: match ? match[1] : null,\n    confidence: match ? parseFloat(match[2]) : null\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2000,
+        -144
+      ],
+      "id": "c184a91b-aa6e-4a7f-91f8-c33588de4048",
+      "name": "Recover Classification for Response"
+    },
+    {
+      "parameters": {
+        "text": "={{ $json.application_notes }}",
+        "guardrails": {
+          "jailbreak": {
+            "value": {
+              "threshold": 0.7
+            }
+          },
+          "topicalAlignment": {
+            "value": {
+              "threshold": 0.7,
+              "prompt": "You are a content analysis system that determines if text stays on topic.\n\nBUSINESS SCOPE: \"Processing recruitment applications for Berger & Voss — role fit, urgency, and missing information.\"\n\nDetermine if the text stays within the defined business scope. Flag any content\nthat strays from the allowed topics."
+            }
+          }
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.guardrails",
+      "typeVersion": 2,
+      "position": [
+        448,
+        288
+      ],
+      "id": "21ead4e9-7c03-44ee-911f-4b95c86fabe4",
+      "name": "Input Guardrails"
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first().json;\n\nreturn [{\n  json: {\n    candidate_name: item.candidate_name || 'unknown',\n    application_notes: item.guardrailsInput || '',\n    input_guardrail_checks: item.checks || []\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        864,
+        432
+      ],
+      "id": "2c7c368a-b53f-4279-8293-1e70ea5a1725",
+      "name": "Recover Fields for Input Failure Log"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1bJzSyT7gMBK9q3w-obrvz2_AWUOwosv4ATdkMuqiRK4",
+          "mode": "list",
+          "cachedResultName": "log failure",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1bJzSyT7gMBK9q3w-obrvz2_AWUOwosv4ATdkMuqiRK4/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "input guardrails",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1bJzSyT7gMBK9q3w-obrvz2_AWUOwosv4ATdkMuqiRK4/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "input_guardrail_checks": "={{ $json.input_guardrail_checks[0] }}",
+            "application_notes": "={{ $json.application_notes }}",
+            "candidate_name": "={{ $json.candidate_name }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "candidate_name",
+              "displayName": "candidate_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "application_notes",
+              "displayName": "application_notes",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "input_guardrail_checks",
+              "displayName": "input_guardrail_checks",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1152,
+        432
+      ],
+      "id": "713b17ea-7332-47c6-b295-d842928e84b5",
+      "name": "log failure (input guardrail)",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "qgGrjLncoAlkVC60",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1bJzSyT7gMBK9q3w-obrvz2_AWUOwosv4ATdkMuqiRK4",
+          "mode": "list",
+          "cachedResultName": "log failure",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1bJzSyT7gMBK9q3w-obrvz2_AWUOwosv4ATdkMuqiRK4/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1419506405,
+          "mode": "list",
+          "cachedResultName": "structural validation",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1bJzSyT7gMBK9q3w-obrvz2_AWUOwosv4ATdkMuqiRK4/edit#gid=1419506405"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1664,
+        336
+      ],
+      "id": "483701ec-9b7b-4168-81a9-8a3991f16801",
+      "name": "log failure (structural validation)",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "qgGrjLncoAlkVC60",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1bJzSyT7gMBK9q3w-obrvz2_AWUOwosv4ATdkMuqiRK4",
+          "mode": "list",
+          "cachedResultName": "log failure",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1bJzSyT7gMBK9q3w-obrvz2_AWUOwosv4ATdkMuqiRK4/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1444261867,
+          "mode": "list",
+          "cachedResultName": "output guardrails",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1bJzSyT7gMBK9q3w-obrvz2_AWUOwosv4ATdkMuqiRK4/edit#gid=1444261867"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1952,
+        96
+      ],
+      "id": "f84942f6-4336-4fca-993b-ca2974735f9b",
+      "name": "log failure (output guardrail)",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "qgGrjLncoAlkVC60",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "ayad.i.alsultan@gmail.com",
+        "subject": "input guardrail ",
+        "message": "process stopped here by input guardrails",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1360,
+        640
+      ],
+      "id": "e67b7474-8b28-4da0-948c-8cd65ba8b336",
+      "name": "flag input guardrail",
+      "webhookId": "9a8c5deb-b5da-47da-b3c2-a9f9458040cc",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "U1avbfDdye4BW2rU",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "ayad.i.alsultan@gmail.com",
+        "subject": "structural validation",
+        "message": "stopped at structural validation ",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1952,
+        336
+      ],
+      "id": "c737d42d-9e0b-491a-b218-cb2c0f8baadb",
+      "name": "escalate structural validation",
+      "webhookId": "e4f4eaa6-2c3f-4107-a96e-f3ffbc4fefb5",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "U1avbfDdye4BW2rU",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "ayad.i.alsultan@gmail.com",
+        "subject": "output guardrail",
+        "message": "output guardrail detection ",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        2176,
+        96
+      ],
+      "id": "10c50363-04b3-4562-8add-43211cb83512",
+      "name": "escalate output guardrail",
+      "webhookId": "a57c6b3e-bb96-446c-9791-e04d621ef848",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "U1avbfDdye4BW2rU",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "2bb3027f-0cf9-4a8e-9f5b-c2c00bd7f386",
+              "leftValue": "={{ $json.classification }}",
+              "rightValue": "decline",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "eaab1e07-c443-476e-bc5b-5b8b345c1b68",
+              "leftValue": "={{ ['advance', 'request_info', 'decline'].includes($json.classification) }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "718382e8-d2ad-4f92-a6ce-21c2b85da62e",
+              "leftValue": "={{ typeof $json.confidence === 'number' && $json.confidence >= 0 && $json.confidence <= 1 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1376,
+        144
+      ],
+      "id": "207d0693-a8a5-40ed-8258-68ec6240cea9",
+      "name": "structural validatoin"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "1cf92065-c7a7-4b72-8650-1f714c8cff24",
+              "leftValue": "={{ $json.classification }}",
+              "rightValue": "decline",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        2224,
+        -160
+      ],
+      "id": "f634e3cd-4c29-4e2c-9c98-410ab809a019",
+      "name": "Route: Decline vs Advance/Request-info"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "4a5f4dbc-13e0-4bb3-bb2d-a693c3c502d9",
+              "name": "drafted_message",
+              "value": "=Dear {{ $('Normalize Application Fields').item.json.candidate_name|| 'Applicant' }},  Thank you for your interest in a role with Berger & Voss Talent Group. After careful review, we will not be moving forward with your application at this time.  We appreciate the time you took to apply and wish you the best in your search.  Berger & Voss Talent Group",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.5,
+      "position": [
+        2448,
+        -256
+      ],
+      "id": "9f38ce94-36b4-47c4-8e5d-cdb80c40f6d9",
+      "name": "draft decline message"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1UgdkSDJqu-NWmM8ranJmVrTlhfj4vN3o8eqq6URWYGw",
+          "mode": "list",
+          "cachedResultName": "Decisoin_audit_log",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1UgdkSDJqu-NWmM8ranJmVrTlhfj4vN3o8eqq6URWYGw/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1UgdkSDJqu-NWmM8ranJmVrTlhfj4vN3o8eqq6URWYGw/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "reviewer": "Katrin",
+            "agent_reasoning": "={{ $('Intake Classification Agent').item.json.output }}",
+            "agent_recommendation": "decline",
+            "application_id": "={{ $('Normalize Application Fields').item.json.candidate_name }}",
+            "candidate_name": "={{ $('Normalize Application Fields').item.json.candidate_name }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "application_id",
+              "displayName": "application_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "candidate_name",
+              "displayName": "candidate_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "agent_recommendation",
+              "displayName": "agent_recommendation",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "agent_reasoning",
+              "displayName": "agent_reasoning",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "reviewer",
+              "displayName": "reviewer",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "decision",
+              "displayName": "decision",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "decided_at",
+              "displayName": "decided_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        2672,
+        -256
+      ],
+      "id": "ef37bc1c-63ce-4e3b-bca8-b3aa9539a3a4",
+      "name": "decision audit log (human in the loop)",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "qgGrjLncoAlkVC60",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1UgdkSDJqu-NWmM8ranJmVrTlhfj4vN3o8eqq6URWYGw",
+          "mode": "list",
+          "cachedResultName": "Decisoin_audit_log",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1UgdkSDJqu-NWmM8ranJmVrTlhfj4vN3o8eqq6URWYGw/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1UgdkSDJqu-NWmM8ranJmVrTlhfj4vN3o8eqq6URWYGw/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "candidate_name": "={{ $('Normalize Application Fields').item.json.candidate_name }}",
+            "agent_recommendation": "={{ $('Intake Classification Agent').item.json.output }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "application_id",
+              "displayName": "application_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "candidate_name",
+              "displayName": "candidate_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "agent_recommendation",
+              "displayName": "agent_recommendation",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "agent_reasoning",
+              "displayName": "agent_reasoning",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "reviewer",
+              "displayName": "reviewer",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "decision",
+              "displayName": "decision",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "decided_at",
+              "displayName": "decided_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        2576,
+        -32
+      ],
+      "id": "68156787-0797-445b-9511-6b9f0f7aefb8",
+      "name": "Append row in sheet",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "qgGrjLncoAlkVC60",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "ayad.i.alsultan@gmail.com",
+        "subject": "advance/request more info",
+        "message": "hi we would like to inform you that your application has passed to the next step",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        2800,
+        -16
+      ],
+      "id": "8a1cc6be-197c-4e9b-94ba-6526137e594f",
+      "name": "Send a message1",
+      "webhookId": "507e9930-4ebc-43cd-9210-8847c53c0a23",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "U1avbfDdye4BW2rU",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "ayad.i.alsultan@gmail.com",
+        "subject": "decline pending approval ",
+        "message": "the application has been rejected",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        2896,
+        -256
+      ],
+      "id": "6a904546-1f67-40cc-a848-5b19d922c391",
+      "name": "Send a message",
+      "webhookId": "a1c2d384-4a7a-41cb-95de-d9f5c6ad7c08",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "U1avbfDdye4BW2rU",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "Status: Pending approval",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        3120,
+        -256
+      ],
+      "id": "b34ae5dd-2d51-4279-aa33-9f541360410e",
+      "name": "Respond to Webhook(pending approval)"
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "flagged output guardrail",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        2400,
+        256
+      ],
+      "id": "bb5ed788-6e4b-42c7-84f8-6440add6ac56",
+      "name": "Respond to Webhook (output guardrail)"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        2176,
+        528
+      ],
+      "id": "b179d9e3-d9b5-4fd5-a648-8cff1922d762",
+      "name": "Respond to Webhook (structural validation failure)"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1520,
+        752
+      ],
+      "id": "f0f5532b-508f-4eef-b448-457b55636221",
+      "name": "Respond to Webhook (input guardrail)"
+    }
+  ],
+  "pinData": {
+    "Candidate Application Trigger": [
+      {
+        "json": {
+          "candidate_name": "Test Candidate — Missing Field"
+        }
+      }
+    ]
+  },
+  "connections": {
+    "Candidate Application Trigger": {
+      "main": [
+        [
+          {
+            "node": "Normalize Application Fields",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Application Fields": {
+      "main": [
+        [
+          {
+            "node": "Input Guardrails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Intake Classification Agent": {
+      "main": [
+        [
+          {
+            "node": "Parse Agent Output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenRouter Chat Model (Guardrails input)": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Input Guardrails",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenRouter Chat Model (Agent)": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Intake Classification Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Agent Output": {
+      "main": [
+        [
+          {
+            "node": "structural validatoin",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Output Guardrails": {
+      "main": [
+        [
+          {
+            "node": "Recover Classification for Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "log failure (output guardrail)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenRouter Chat Model (Guardrails output)": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Output Guardrails",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recover Classification for Response": {
+      "main": [
+        [
+          {
+            "node": "Route: Decline vs Advance/Request-info",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Input Guardrails": {
+      "main": [
+        [
+          {
+            "node": "Intake Classification Agent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Recover Fields for Input Failure Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recover Fields for Input Failure Log": {
+      "main": [
+        [
+          {
+            "node": "log failure (input guardrail)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "log failure (input guardrail)": {
+      "main": [
+        [
+          {
+            "node": "flag input guardrail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "log failure (structural validation)": {
+      "main": [
+        [
+          {
+            "node": "escalate structural validation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "log failure (output guardrail)": {
+      "main": [
+        [
+          {
+            "node": "escalate output guardrail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "structural validatoin": {
+      "main": [
+        [
+          {
+            "node": "Output Guardrails",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "log failure (structural validation)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route: Decline vs Advance/Request-info": {
+      "main": [
+        [
+          {
+            "node": "draft decline message",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Append row in sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "draft decline message": {
+      "main": [
+        [
+          {
+            "node": "decision audit log (human in the loop)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "decision audit log (human in the loop)": {
+      "main": [
+        [
+          {
+            "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Output (drafted next-step message)": {
+      "main": [
+        []
+      ]
+    },
+    "Append row in sheet": {
+      "main": [
+        [
+          {
+            "node": "Send a message1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send a message": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook(pending approval)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "escalate output guardrail": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook (output guardrail)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "escalate structural validation": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook (structural validation failure)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "flag input guardrail": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook (input guardrail)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send a message1": {
+      "main": [
+        [
+          {
+            "node": "Output (drafted next-step message)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "e294017d-6e76-4588-b0a9-520e8145a091",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "ff10f071e974f24f1e71a8b19a5d20e26d4987deffc399da2b4251d6346dfeb7"
+  },
+  "nodeGroups": [],
+  "id": "xMYyBAvbNSjYWiSa",
+  "tags": []
+}
